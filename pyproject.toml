@@ -1,7 +1,7 @@
 [project]
 name = "briefmarker"
 version = "0.1.0"
-description = "Add your description here"
+description = "Deduplicate stamps via webcam"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

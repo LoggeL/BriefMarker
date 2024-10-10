@@ -1,0 +1,6 @@
+faiss-cpu
+flask
+flask-cors
+inference
+opencv-python-headless
+python-dotenv
