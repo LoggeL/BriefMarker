@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Stamp Deduplication Tool</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      #webcam-container {
+        position: relative;
+      }
+      .bounding-box {
+        position: absolute;
+        border: 2px solid red;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+      <h1 class="text-3xl font-bold mb-8">Stamp Deduplication Tool</h1>
+      <div class="flex flex-wrap -mx-4">
+        <div class="w-full md:w-1/2 px-4 mb-8">
+          <div id="webcam-container" class="bg-white p-4 rounded-lg shadow-md">
+            <video
+              id="webcam"
+              autoplay
+              playsinline
+              width="640"
+              height="480"
+              class="mb-4"
+            ></video>
+            <button
+              id="capture"
+              class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 mr-2"
+            >
+              Capture Image
+            </button>
+            <button
+              id="detect-database"
+              class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
+            >
+              Detect Against Database
+            </button>
+          </div>
+        </div>
+        <div class="w-full md:w-1/2 px-4">
+          <div id="results" class="bg-white p-4 rounded-lg shadow-md">
+            <h2 class="text-xl font-semibold mb-4">Detected Stamps</h2>
+            <ul id="stamp-list" class="space-y-4"></ul>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      const video = document.getElementById('webcam')
+      const captureButton = document.getElementById('capture')
+      const detectDatabaseButton = document.getElementById('detect-database')
+      const stampList = document.getElementById('stamp-list')
+      const webcamContainer = document.getElementById('webcam-container')
+
+      // Access webcam
+      navigator.mediaDevices
+        .getUserMedia({ video: true })
+        .then((stream) => {
+          video.srcObject = stream
+        })
+        .catch((error) => {
+          console.error('Error accessing webcam:', error)
+        })
+
+      function captureImage() {
+        const canvas = document.createElement('canvas')
+        canvas.width = video.videoWidth
+        canvas.height = video.videoHeight
+        canvas.getContext('2d').drawImage(video, 0, 0)
+        return new Promise((resolve) => {
+          canvas.toBlob((blob) => {
+            resolve(blob)
+          }, 'image/jpeg')
+        })
+      }
+
+      captureButton.addEventListener('click', () => {
+        captureImage().then((blob) => {
+          const formData = new FormData()
+          formData.append('image', blob, 'captured_image.jpg')
+
+          fetch('http://localhost:5000/detect_stamps', {
+            method: 'POST',
+            body: formData,
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              displayResults(data.stamps)
+            })
+            .catch((error) => {
+              console.error('Error:', error)
+            })
+        })
+      })
+
+      detectDatabaseButton.addEventListener('click', () => {
+        captureImage().then((blob) => {
+          const formData = new FormData()
+          formData.append('image', blob, 'captured_image.jpg')
+
+          fetch('http://localhost:5000/detect_against_database', {
+            method: 'POST',
+            body: formData,
+          })
+            .then((response) => response.json())
+            .then((data) => {
+              displayDatabaseResults(data.similar_stamps)
+            })
+            .catch((error) => {
+              console.error('Error:', error)
+            })
+        })
+      })
+
+      function displayResults(stamps) {
+        stampList.innerHTML = ''
+        webcamContainer
+          .querySelectorAll('.bounding-box')
+          .forEach((box) => box.remove())
+
+        stamps.forEach((stamp, index) => {
+          const listItem = document.createElement('li')
+          listItem.innerHTML = `
+                    <h3 class="font-semibold">Stamp ${index + 1}</h3>
+                    <img src="http://localhost:5000/stamp_image/${
+                      stamp.id
+                    }" alt="Detected Stamp" class="w-32 h-32 object-contain mb-2">
+                    <p>Similar stamps: ${stamp.similar_stamps
+                      .map((s) => s[0])
+                      .join(', ')}</p>
+                `
+          stampList.appendChild(listItem)
+
+          const box = document.createElement('div')
+          box.className = 'bounding-box'
+          box.style.left = `${stamp.bbox[0] - stamp.bbox[2] / 2}px`
+          box.style.top = `${stamp.bbox[1] - stamp.bbox[3] / 2}px`
+          box.style.width = `${stamp.bbox[2]}px`
+          box.style.height = `${stamp.bbox[3]}px`
+          webcamContainer.appendChild(box)
+        })
+      }
+
+      function displayDatabaseResults(similarStamps) {
+        stampList.innerHTML = ''
+        webcamContainer
+          .querySelectorAll('.bounding-box')
+          .forEach((box) => box.remove())
+
+        similarStamps.forEach((stamp, index) => {
+          const listItem = document.createElement('li')
+          listItem.innerHTML = `
+                    <h3 class="font-semibold">Detected Stamp ${index + 1}</h3>
+                    <h4 class="font-medium mt-2">Similar Stamps:</h4>
+                    <ul class="list-disc pl-5">
+                        ${stamp.similar_stamps
+                          .map(
+                            (s) => `
+                            <li>
+                                ID: ${s.id}<br>
+                                Similarity: ${(s.similarity * 100).toFixed(
+                                  2
+                                )}%<br>
+                                <img src="http://localhost:5000/stamp_image/${
+                                  s.id
+                                }" alt="Similar Stamp" class="w-32 h-32 object-contain">
+                            </li>
+                        `
+                          )
+                          .join('')}
+                    </ul>
+                `
+          stampList.appendChild(listItem)
+
+          const box = document.createElement('div')
+          box.className = 'bounding-box'
+          box.style.left = `${stamp.bbox[0] - stamp.bbox[2] / 2}px`
+          box.style.top = `${stamp.bbox[1] - stamp.bbox[3] / 2}px`
+          box.style.width = `${stamp.bbox[2]}px`
+          box.style.height = `${stamp.bbox[3]}px`
+          webcamContainer.appendChild(box)
+        })
+      }
+    </script>
+  </body>
+</html>
