@@ -6,48 +6,108 @@
     <title>Stamp Deduplication Tool</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      #webcam-container {
-        position: relative;
+      .similar-stamps-scroll {
+        overflow-x: auto;
+        scrollbar-width: thin;
+        white-space: nowrap;
+      }
+      .similar-stamps-scroll::-webkit-scrollbar {
+        height: 6px;
+      }
+      .similar-stamps-scroll::-webkit-scrollbar-track {
+        background: #f1f1f1;
+      }
+      .similar-stamps-scroll::-webkit-scrollbar-thumb {
+        background: #888;
+        border-radius: 3px;
+      }
+      .stamp-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(400px, 1fr));
+        gap: 0.75rem;
+      }
+      .stamp-card {
+        transition: all 0.2s ease;
+        cursor: pointer;
+      }
+      .stamp-card.selected {
+        background-color: #e0f2fe !important;
       }
       .bounding-box {
         position: absolute;
-        border: 2px solid red;
+        border: 3px solid;
         pointer-events: none;
+        transition: all 0.2s ease;
+      }
+      .bounding-box.selected {
+        border-color: #22c55e;
+      }
+      .bounding-box.not-selected {
+        border-color: #ef4444;
+      }
+      .step {
+        opacity: 0;
+        pointer-events: none;
+        transition: all 0.3s ease;
+        position: absolute;
+        width: 100%;
+        height: 100%;
+      }
+      .step.active {
+        opacity: 1;
+        pointer-events: auto;
+        position: relative;
       }
     </style>
   </head>
   <body class="bg-gray-100">
-    <div class="container mx-auto px-4 py-8">
-      <h1 class="text-3xl font-bold mb-8">Stamp Deduplication Tool</h1>
-      <div class="flex flex-wrap -mx-4">
-        <div class="w-full md:w-1/2 px-4 mb-8">
-          <div id="webcam-container" class="bg-white p-4 rounded-lg shadow-md">
-            <video
-              id="webcam"
-              autoplay
-              playsinline
-              width="640"
-              height="480"
-              class="mb-4"
-            ></video>
-            <button
-              id="capture"
-              class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 mr-2"
-            >
-              Capture Image
-            </button>
-            <button
-              id="detect-database"
-              class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600"
-            >
-              Detect Against Database
-            </button>
+    <div class="container mx-auto px-4 py-4">
+      <!-- Step indicator -->
+      <div class="flex justify-between items-center mb-4">
+        <h1 class="text-2xl font-bold">Stamp Deduplication Tool</h1>
+        <div class="flex gap-4 items-center">
+          <div class="flex gap-2 text-sm">
+            <span id="step-indicator" class="font-medium"></span>
+            <span class="text-gray-500">(Press spacebar to continue)</span>
           </div>
+          <button
+            id="save-selected"
+            class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600 disabled:opacity-50 hidden"
+          >
+            Save Selected Stamps
+          </button>
         </div>
-        <div class="w-full md:w-1/2 px-4">
-          <div id="results" class="bg-white p-4 rounded-lg shadow-md">
-            <h2 class="text-xl font-semibold mb-4">Detected Stamps</h2>
-            <ul id="stamp-list" class="space-y-4"></ul>
+      </div>
+
+      <!-- Step 1: Webcam capture -->
+      <div id="step-1" class="step active">
+        <div class="bg-white p-4 rounded-lg shadow-md">
+          <video
+            id="webcam"
+            autoplay
+            playsinline
+            width="1920"
+            height="1080"
+            style="width: 100%; height: auto"
+          ></video>
+        </div>
+      </div>
+
+      <!-- Step 2: Stamp selection -->
+      <div id="step-2" class="step">
+        <div class="bg-white p-4 rounded-lg shadow-md">
+          <h2 class="text-xl font-semibold mb-2">Select Stamps to Keep</h2>
+          <div id="detected-stamps" class="stamp-grid"></div>
+        </div>
+      </div>
+
+      <!-- Step 3: Review -->
+      <div id="step-3" class="step">
+        <div class="bg-white p-4 rounded-lg shadow-md">
+          <h2 class="text-xl font-semibold mb-2">Review Selected Stamps</h2>
+          <div id="review-container" class="relative">
+            <img id="review-image" class="w-full" />
+            <div id="review-boxes"></div>
           </div>
         </div>
       </div>
@@ -55,14 +115,30 @@
 
     <script>
       const video = document.getElementById('webcam')
-      const captureButton = document.getElementById('capture')
-      const detectDatabaseButton = document.getElementById('detect-database')
-      const stampList = document.getElementById('stamp-list')
-      const webcamContainer = document.getElementById('webcam-container')
+      const saveSelectedButton = document.getElementById('save-selected')
+      const detectedStampsContainer = document.getElementById('detected-stamps')
+      const stepIndicator = document.getElementById('step-indicator')
+      const steps = [
+        document.getElementById('step-1'),
+        document.getElementById('step-2'),
+        document.getElementById('step-3'),
+      ]
+      const reviewImage = document.getElementById('review-image')
+      const reviewBoxes = document.getElementById('review-boxes')
 
-      // Access webcam
+      let currentStep = 1
+      let detectedStamps = []
+      let selectedStamps = new Set()
+      let capturedImage = null
+
+      // Initialize webcam
       navigator.mediaDevices
-        .getUserMedia({ video: true })
+        .getUserMedia({
+          video: {
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+        })
         .then((stream) => {
           video.srcObject = stream
         })
@@ -70,125 +146,246 @@
           console.error('Error accessing webcam:', error)
         })
 
+      function updateStepIndicator() {
+        const messages = [
+          'Step 1: Position stamps and press spacebar to capture',
+          'Step 2: Select stamps to keep',
+          'Step 3: Review selections',
+        ]
+        stepIndicator.textContent = messages[currentStep - 1]
+      }
+      updateStepIndicator()
+
+      function goToStep(step) {
+        steps.forEach((s, i) => {
+          s.classList.toggle('active', i === step - 1)
+        })
+        currentStep = step
+        updateStepIndicator()
+
+        if (step === 2) {
+          saveSelectedButton.classList.remove('hidden')
+        } else {
+          saveSelectedButton.classList.add('hidden')
+        }
+      }
+
+      function extractStampImage(bbox) {
+        const canvas = document.createElement('canvas')
+        const padding = 20
+        canvas.width = bbox[2] + padding * 2
+        canvas.height = bbox[3] + padding * 2
+        const ctx = canvas.getContext('2d')
+
+        ctx.drawImage(
+          video,
+          bbox[0] - bbox[2] / 2 - padding,
+          bbox[1] - bbox[3] / 2 - padding,
+          bbox[2] + padding * 2,
+          bbox[3] + padding * 2,
+          0,
+          0,
+          canvas.width,
+          canvas.height
+        )
+
+        return canvas.toDataURL('image/jpeg', 0.95)
+      }
+
       function captureImage() {
         const canvas = document.createElement('canvas')
         canvas.width = video.videoWidth
         canvas.height = video.videoHeight
         canvas.getContext('2d').drawImage(video, 0, 0)
+
+        capturedImage = canvas.toDataURL('image/jpeg', 0.95)
+
         return new Promise((resolve) => {
-          canvas.toBlob((blob) => {
-            resolve(blob)
-          }, 'image/jpeg')
+          canvas.toBlob(
+            (blob) => {
+              resolve(blob)
+            },
+            'image/jpeg',
+            0.95
+          )
         })
       }
 
-      captureButton.addEventListener('click', () => {
-        captureImage().then((blob) => {
-          const formData = new FormData()
-          formData.append('image', blob, 'captured_image.jpg')
-
-          fetch('http://localhost:5000/detect_stamps', {
-            method: 'POST',
-            body: formData,
-          })
-            .then((response) => response.json())
-            .then((data) => {
-              displayResults(data.stamps)
-            })
-            .catch((error) => {
-              console.error('Error:', error)
-            })
-        })
-      })
-
-      detectDatabaseButton.addEventListener('click', () => {
-        captureImage().then((blob) => {
-          const formData = new FormData()
-          formData.append('image', blob, 'captured_image.jpg')
-
-          fetch('http://localhost:5000/detect_against_database', {
-            method: 'POST',
-            body: formData,
-          })
-            .then((response) => response.json())
-            .then((data) => {
-              displayDatabaseResults(data.similar_stamps)
-            })
-            .catch((error) => {
-              console.error('Error:', error)
-            })
-        })
-      })
-
-      function displayResults(stamps) {
-        stampList.innerHTML = ''
-        webcamContainer
-          .querySelectorAll('.bounding-box')
-          .forEach((box) => box.remove())
+      function displayDetectedStamps(stamps) {
+        detectedStampsContainer.innerHTML = ''
+        selectedStamps.clear()
 
         stamps.forEach((stamp, index) => {
-          const listItem = document.createElement('li')
-          listItem.innerHTML = `
-                    <h3 class="font-semibold">Stamp ${index + 1}</h3>
-                    <img src="http://localhost:5000/stamp_image/${
-                      stamp.id
-                    }" alt="Detected Stamp" class="w-32 h-32 object-contain mb-2">
-                    <p>Similar stamps: ${stamp.similar_stamps
-                      .map((s) => s[0])
-                      .join(', ')}</p>
-                `
-          stampList.appendChild(listItem)
+          const stampCard = document.createElement('div')
+          stampCard.className =
+            'stamp-card flex items-start gap-2 p-3 border rounded-lg bg-gray-50'
 
+          // Create hidden checkbox
+          const checkbox = document.createElement('input')
+          checkbox.type = 'checkbox'
+          checkbox.className = 'hidden'
+          checkbox.dataset.stampIndex = index
+
+          // Auto-check if no similar stamps or all similarities < 15%
+          const hasCloseMatch = stamp.similar_stamps?.some(
+            ([, similarity]) => similarity >= 0.15
+          )
+          if (!stamp.similar_stamps || !hasCloseMatch) {
+            checkbox.checked = true
+            selectedStamps.add(index)
+            stampCard.classList.add('selected')
+          }
+
+          // Make whole card clickable
+          stampCard.addEventListener('click', () => {
+            checkbox.checked = !checkbox.checked
+            if (checkbox.checked) {
+              selectedStamps.add(index)
+              stampCard.classList.add('selected')
+            } else {
+              selectedStamps.delete(index)
+              stampCard.classList.remove('selected')
+            }
+            saveSelectedButton.disabled = selectedStamps.size === 0
+          })
+
+          // Detected stamp image
+          const detectedImg = document.createElement('img')
+          detectedImg.src = stamp.imageUrl
+          detectedImg.className =
+            'w-24 h-24 object-contain bg-white border rounded'
+
+          // Similar stamps container
+          const similarContainer = document.createElement('div')
+          similarContainer.className = 'flex-1 similar-stamps-scroll'
+
+          if (stamp.similar_stamps && stamp.similar_stamps.length > 0) {
+            const similarStamps = document.createElement('div')
+            similarStamps.className = 'inline-flex gap-2'
+
+            stamp.similar_stamps.forEach(([id, similarity]) => {
+              const similarStamp = document.createElement('div')
+              similarStamp.className = 'inline-block text-center'
+              similarStamp.innerHTML = `
+                <img src="http://localhost:5000/stamp_image/${id}" 
+                     alt="Similar Stamp" 
+                     class="w-24 h-24 object-contain bg-white border rounded">
+                <div class="text-xs font-medium">${(similarity * 100).toFixed(
+                  1
+                )}%</div>
+              `
+              similarStamps.appendChild(similarStamp)
+            })
+
+            similarContainer.appendChild(similarStamps)
+          } else {
+            similarContainer.innerHTML = `
+              <div class="text-sm text-gray-500 mt-4">No similar stamps found</div>
+            `
+          }
+
+          stampCard.appendChild(checkbox)
+          stampCard.appendChild(detectedImg)
+          stampCard.appendChild(similarContainer)
+          detectedStampsContainer.appendChild(stampCard)
+        })
+
+        saveSelectedButton.disabled = selectedStamps.size === 0
+      }
+
+      function showReview() {
+        // Display captured image
+        reviewImage.src = capturedImage
+        reviewBoxes.innerHTML = ''
+
+        // Add bounding boxes
+        detectedStamps.forEach((stamp, index) => {
           const box = document.createElement('div')
-          box.className = 'bounding-box'
-          box.style.left = `${stamp.bbox[0] - stamp.bbox[2] / 2}px`
-          box.style.top = `${stamp.bbox[1] - stamp.bbox[3] / 2}px`
-          box.style.width = `${stamp.bbox[2]}px`
-          box.style.height = `${stamp.bbox[3]}px`
-          webcamContainer.appendChild(box)
+          box.className = `bounding-box ${
+            selectedStamps.has(index) ? 'selected' : 'not-selected'
+          }`
+
+          const scale = reviewImage.offsetWidth / video.videoWidth
+          box.style.left = `${(stamp.bbox[0] - stamp.bbox[2] / 2) * scale}px`
+          box.style.top = `${(stamp.bbox[1] - stamp.bbox[3] / 2) * scale}px`
+          box.style.width = `${stamp.bbox[2] * scale}px`
+          box.style.height = `${stamp.bbox[3] * scale}px`
+
+          reviewBoxes.appendChild(box)
         })
       }
 
-      function displayDatabaseResults(similarStamps) {
-        stampList.innerHTML = ''
-        webcamContainer
-          .querySelectorAll('.bounding-box')
-          .forEach((box) => box.remove())
+      // Handle spacebar navigation
+      document.addEventListener('keydown', (e) => {
+        if (e.code === 'Space') {
+          e.preventDefault()
 
-        similarStamps.forEach((stamp, index) => {
-          const listItem = document.createElement('li')
-          listItem.innerHTML = `
-                    <h3 class="font-semibold">Detected Stamp ${index + 1}</h3>
-                    <h4 class="font-medium mt-2">Similar Stamps:</h4>
-                    <ul class="list-disc pl-5">
-                        ${stamp.similar_stamps
-                          .map(
-                            (s) => `
-                            <li>
-                                ID: ${s.id}<br>
-                                Similarity: ${(s.similarity * 100).toFixed(
-                                  2
-                                )}%<br>
-                                <img src="http://localhost:5000/stamp_image/${
-                                  s.id
-                                }" alt="Similar Stamp" class="w-32 h-32 object-contain">
-                            </li>
-                        `
-                          )
-                          .join('')}
-                    </ul>
-                `
-          stampList.appendChild(listItem)
+          if (currentStep === 1) {
+            video.pause()
+            const formData = new FormData()
 
-          const box = document.createElement('div')
-          box.className = 'bounding-box'
-          box.style.left = `${stamp.bbox[0] - stamp.bbox[2] / 2}px`
-          box.style.top = `${stamp.bbox[1] - stamp.bbox[3] / 2}px`
-          box.style.width = `${stamp.bbox[2]}px`
-          box.style.height = `${stamp.bbox[3]}px`
-          webcamContainer.appendChild(box)
-        })
-      }
+            captureImage().then((blob) => {
+              formData.append('image', blob, 'captured_image.jpg')
+
+              fetch('http://localhost:5000/detect_stamps', {
+                method: 'POST',
+                body: formData,
+              })
+                .then((response) => response.json())
+                .then((data) => {
+                  detectedStamps = data.stamps.map((stamp) => ({
+                    ...stamp,
+                    imageUrl: extractStampImage(stamp.bbox),
+                  }))
+                  displayDetectedStamps(detectedStamps)
+                  goToStep(2)
+                })
+                .catch((error) => {
+                  console.error('Error:', error)
+                })
+            })
+          } else if (currentStep === 2) {
+            showReview()
+            goToStep(3)
+          } else if (currentStep === 3) {
+            // Save stamps and reset
+            const stampsToSave = Array.from(selectedStamps).map((index) => {
+              const stamp = detectedStamps[index]
+              return {
+                bbox: stamp.bbox,
+                imageUrl: stamp.imageUrl,
+              }
+            })
+
+            fetch('http://localhost:5000/save_stamps', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ stamps: stampsToSave }),
+            })
+              .then((response) => response.json())
+              .then((data) => {
+                alert(`Successfully saved ${data.saved_count} stamps!`)
+                detectedStampsContainer.innerHTML = ''
+                selectedStamps.clear()
+                saveSelectedButton.disabled = true
+                video.play()
+                goToStep(1)
+              })
+              .catch((error) => {
+                console.error('Error saving stamps:', error)
+                alert('Error saving stamps. Please try again.')
+              })
+          }
+        }
+      })
+
+      // Optional save button in step 2
+      saveSelectedButton.addEventListener('click', () => {
+        showReview()
+        goToStep(3)
+      })
     </script>
   </body>
 </html>
