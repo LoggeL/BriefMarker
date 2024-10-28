@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 import cv2
 import numpy as np
 import faiss
+import base64
 import uuid
 
 load_dotenv()
@@ -137,18 +138,6 @@ def detect_stamps():
         # Generate a unique ID for the stamp
         stamp_id = str(uuid.uuid4())
 
-        # Save the stamp image to disk
-        image_path = os.path.join(STAMPS_DIR, f"{stamp_id}.jpg")
-        cv2.imwrite(image_path, stamp_img)
-
-        # Save stamp data to SQLite
-        c.execute(
-            "INSERT INTO stamps (id, image_path) VALUES (?, ?)", (stamp_id, image_path)
-        )
-
-        # Add features to FAISS index
-        index.add(features.reshape(1, -1))
-
         stamp_data = {
             "id": stamp_id,
             "bbox": [x, y, w, h],
@@ -165,50 +154,6 @@ def detect_stamps():
     return jsonify({"stamps": detected_stamps})
 
 
-@app.route("/detect_against_database", methods=["POST"])
-def detect_against_database():
-    if "image" not in request.files:
-        return jsonify({"error": "No image provided"}), 400
-
-    image = request.files["image"]
-    img_array = cv2.imdecode(np.frombuffer(image.read(), np.uint8), cv2.IMREAD_COLOR)
-
-    # Detect stamps using Roboflow
-    results = model.infer(image=img_array)
-
-    all_similar_stamps = []
-    for detection in results[0].predictions:
-        x, y, w, h = (
-            detection.x,
-            detection.y,
-            detection.width,
-            detection.height,
-        )
-
-        stamp_img = img_array[
-            int(y - h / 2) : int(y + h / 2), int(x - w / 2) : int(x + w / 2)
-        ]
-
-        features = extract_features(stamp_img)
-        similar_stamps = find_similar_stamps(
-            features, k=10
-        )  # Increase limit for database-wide search
-
-        stamp_data = {
-            "bbox": [x, y, w, h],
-            "similar_stamps": [
-                {
-                    "id": stamp_id,
-                    "similarity": float(similarity),
-                }
-                for stamp_id, similarity in similar_stamps
-            ],
-        }
-        all_similar_stamps.append(stamp_data)
-
-    return jsonify({"similar_stamps": all_similar_stamps})
-
-
 @app.route("/stamp_image/<stamp_id>", methods=["GET"])
 def get_stamp_image(stamp_id):
     conn = sqlite3.connect(DB_PATH)
@@ -222,6 +167,38 @@ def get_stamp_image(stamp_id):
         return send_file(image_path, mimetype="image/jpeg")
     else:
         return jsonify({"error": "Stamp not found"}), 404
+
+
+# Receives the detected and unique stamps and saves them to the database and their image to the disk (b64)
+@app.route("/save_stamps", methods=["POST"])
+def save_stamps():
+    data = request.json
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    for stamp in data["stamps"]:
+        stamp_id = stamp["id"]
+        stamp_image_b64 = stamp["image"]  # b64 image
+
+        # Decode the base64 image
+        stamp_image_data = base64.b64decode(stamp_image_b64)
+        stamp_image_np = np.frombuffer(stamp_image_data, np.uint8)
+        stamp_image = cv2.imdecode(stamp_image_np, cv2.IMREAD_COLOR)
+
+        # Save stamp data to SQLite
+        c.execute(
+            "INSERT INTO stamps (id, image_path) VALUES (?, ?)",
+            (stamp_id, stamp["image_path"]),
+        )
+
+        # Add features to FAISS index
+        features = extract_features(stamp_image)
+        index.add(features.reshape(1, -1))
+
+        # Save the stamp image to disk
+        image_path = os.path.join(STAMPS_DIR, f"{stamp_id}.jpg")
+        cv2.imwrite(image_path, stamp_image)
+    conn.commit()
+    conn.close()
 
 
 if __name__ == "__main__":
