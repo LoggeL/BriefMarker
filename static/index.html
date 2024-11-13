@@ -51,9 +51,10 @@
         transition: all 0.3s ease;
         position: absolute;
         width: 100%;
-        height: 100%;
+        display: none;
       }
       .step.active {
+        display: block;
         opacity: 1;
         pointer-events: auto;
         position: relative;
@@ -267,8 +268,8 @@
               const similarStamp = document.createElement('div')
               similarStamp.className = 'inline-block text-center'
               similarStamp.innerHTML = `
-                <img src="http://localhost:5000/stamp_image/${id}" 
-                     alt="Similar Stamp" 
+                <img src="http://localhost:5000/stamp_image/${id}"
+                     alt="Similar Stamp"
                      class="w-24 h-24 object-contain bg-white border rounded">
                 <div class="text-xs font-medium">${(similarity * 100).toFixed(
                   1
@@ -297,22 +298,26 @@
         // Display captured image
         reviewImage.src = capturedImage
         reviewBoxes.innerHTML = ''
+        reviewImage.onload = () => {
+          // Add bounding boxes
+          detectedStamps.forEach((stamp, index) => {
+            const box = document.createElement('div')
+            box.className = `bounding-box ${
+              selectedStamps.has(index) ? 'selected' : 'not-selected'
+            }`
 
-        // Add bounding boxes
-        detectedStamps.forEach((stamp, index) => {
-          const box = document.createElement('div')
-          box.className = `bounding-box ${
-            selectedStamps.has(index) ? 'selected' : 'not-selected'
-          }`
+            // Wait for the image to load before calculating dimensions
+            const scale = reviewImage.offsetWidth / video.videoWidth
+            const [centerX, centerY, width, height] = stamp.bbox
 
-          const scale = reviewImage.offsetWidth / video.videoWidth
-          box.style.left = `${(stamp.bbox[0] - stamp.bbox[2] / 2) * scale}px`
-          box.style.top = `${(stamp.bbox[1] - stamp.bbox[3] / 2) * scale}px`
-          box.style.width = `${stamp.bbox[2] * scale}px`
-          box.style.height = `${stamp.bbox[3] * scale}px`
+            box.style.left = `${(centerX - width / 2) * scale}px`
+            box.style.top = `${(centerY - height / 2) * scale}px`
+            box.style.width = `${width * scale}px`
+            box.style.height = `${height * scale}px`
 
-          reviewBoxes.appendChild(box)
-        })
+            reviewBoxes.appendChild(box)
+          })
+        }
       }
 
       // Handle spacebar navigation
