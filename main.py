@@ -3,7 +3,7 @@ import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import sqlite3
-from typing import List, Tuple, Optional, Dict
+from typing import List, Tuple, Optional, Dict, Union
 from dataclasses import dataclass
 import logging
 from pathlib import Path
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Application constants
-FEATURE_DIMENSION = 1024
+FEATURE_DIMENSION = 512
 HOG_FEATURES_SIZE = 512
 SIFT_FEATURES_SIZE = 512
 MAX_IMAGE_SIZE = 4000
@@ -68,7 +68,7 @@ class StampDetectionApp:
 
         # Initialize components
         self._init_db()
-        self.index = self._init_faiss()
+        self.index = self._init_faiss()  # Single index for deep features
         self._init_models()
         self._setup_routes()
 
@@ -118,9 +118,16 @@ class StampDetectionApp:
     def _init_faiss(self) -> faiss.Index:
         """Initialize FAISS similarity search index"""
         try:
-            if os.path.exists(self.config.faiss_index_path):
-                return faiss.read_index(self.config.faiss_index_path)
-            return faiss.IndexFlatL2(self.config.feature_dimension)
+            index_path = self.config.faiss_index_path
+            
+            if os.path.exists(index_path):
+                index = faiss.read_index(index_path)
+            else:
+                index = faiss.IndexFlatL2(FEATURE_DIMENSION)  # For deep features
+                faiss.write_index(index, index_path)
+            
+            return index
+            
         except Exception as e:
             logger.error(f"FAISS initialization error: {e}")
             raise
@@ -131,6 +138,7 @@ class StampDetectionApp:
         self.app.route("/detect_stamps", methods=["POST"])(self.detect_stamps)
         self.app.route("/stamp_image/<stamp_id>", methods=["GET"])(self.get_stamp_image)
         self.app.route("/save_stamps", methods=["POST"])(self.save_stamps)
+        self.app.route("/stamp_count", methods=["GET"])(self.get_stamp_count)
 
     @staticmethod
     def _validate_image(image_data: bytes) -> bool:
@@ -157,34 +165,14 @@ class StampDetectionApp:
         return cv2.equalizeHist(resized)
 
     def extract_features(self, image: np.ndarray) -> np.ndarray:
-        """Extract combined deep learning and SIFT features"""
+        """Extract deep learning features"""
         try:
-            # Extract ResNet features
             with torch.no_grad():
                 img_tensor = self.transform(image).unsqueeze(0)
-                deep_features = self.feature_extractor(img_tensor).numpy().flatten()
-
-            # Extract SIFT features
-            sift = cv2.SIFT_create()
-            _, sift_features = sift.detectAndCompute(image, None)
-
-            # Process SIFT features
-            if sift_features is None or len(sift_features) == 0:
-                sift_vector = np.zeros(SIFT_FEATURES_SIZE)
-            else:
-                sift_features = np.mean(sift_features, axis=0)
-                sift_vector = cv2.resize(
-                    sift_features.reshape(1, -1), (1, SIFT_FEATURES_SIZE)
-                ).flatten()
-
-            # Normalize and combine features
-            sift_vector = sift_vector / (np.linalg.norm(sift_vector) + 1e-7)
-            combined_features = np.concatenate([deep_features, sift_vector])
-            combined_features = combined_features / (
-                np.linalg.norm(combined_features) + 1e-7
-            )
-
-            return combined_features.astype("float32")
+                features = self.feature_extractor(img_tensor).numpy().flatten()
+                assert features.shape[0] == FEATURE_DIMENSION, f"Expected {FEATURE_DIMENSION} features, got {features.shape[0]}"
+                features = features / (np.linalg.norm(features) + 1e-7)
+                return features.astype('float32')
 
         except Exception as e:
             logger.error(f"Feature extraction error: {e}")
@@ -192,30 +180,36 @@ class StampDetectionApp:
 
     def find_similar_stamps(
         self, features: np.ndarray, k: int = 5
-    ) -> List[Tuple[str, float]]:
-        """Find similar stamps using FAISS index"""
+    ) -> Dict[str, List[Dict[str, Union[str, float]]]]:
+        """Find similar stamps using deep features"""
         try:
             distances, indices = self.index.search(features.reshape(1, -1), k)
-            similar_stamps = []
-
+            
+            matches = []
             with sqlite3.connect(self.config.db_path) as conn:
                 cursor = conn.cursor()
-                for idx, dist in zip(indices[0], distances[0]):
-                    cursor.execute("SELECT id FROM stamps WHERE rowid = ?", (int(idx),))
+                
+                for idx, dist in enumerate(distances[0]):
+                    cursor.execute(
+                        "SELECT id FROM stamps WHERE rowid = ?",
+                        (int(indices[0][idx]) + 1,),
+                    )
                     if result := cursor.fetchone():
                         similarity = float(1 / (1 + dist))
-                        similar_stamps.append((result[0], similarity))
+                        matches.append({
+                            "id": result[0],
+                            "similarity": similarity
+                        })
 
-            return similar_stamps
+            return {"matches": matches}
 
         except Exception as e:
             logger.error(f"Error finding similar stamps: {e}")
-            return []
+            return {"matches": []}
 
     def save_stamps(self) -> Dict:
         """Process and save detected stamps"""
         try:
-            # Get stamps data from request
             data = request.get_json()
             if not data or "stamps" not in data:
                 return jsonify({"error": "No stamps data provided"}), 400
@@ -224,43 +218,70 @@ class StampDetectionApp:
             saved_count = 0
 
             for stamp in stamps:
-                # Extract base64 image data
-                image_data = stamp["imageUrl"].split(",")[1]
-                image_bytes = base64.b64decode(image_data)
+                try:
+                    # Extract base64 image data
+                    image_parts = stamp["imageUrl"].split(",")
+                    if len(image_parts) != 2:
+                        continue
+                    image_data = image_parts[1]
+                    image_bytes = base64.b64decode(image_data)
 
-                # Convert to numpy array
-                img_array = cv2.imdecode(
-                    np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR
-                )
-
-                # Generate unique ID and save image
-                stamp_id = str(uuid.uuid4())
-                image_path = os.path.join(self.config.stamps_dir, f"{stamp_id}.jpg")
-                cv2.imwrite(image_path, img_array)
-
-                # Process features
-                features = self.extract_features(img_array)
-
-                # Update database and index
-                with sqlite3.connect(self.config.db_path) as conn:
-                    conn.execute(
-                        "INSERT INTO stamps (id, image_path, features) VALUES (?, ?, ?)",
-                        (stamp_id, image_path, features.tobytes()),
+                    # Convert to numpy array
+                    img_array = cv2.imdecode(
+                        np.frombuffer(image_bytes, np.uint8), cv2.IMREAD_COLOR
                     )
 
-                self.index.add(features.reshape(1, -1))
-                saved_count += 1
+                    if img_array is None:
+                        continue
 
-            # Save updated index
-            faiss.write_index(self.index, self.config.faiss_index_path)
+                    # Generate unique ID and save image
+                    stamp_id = str(uuid.uuid4())
+                    image_path = os.path.join(self.config.stamps_dir, f"{stamp_id}.jpg")
+                    os.makedirs(self.config.stamps_dir, exist_ok=True)
+
+                    if not cv2.imwrite(image_path, img_array):
+                        raise IOError(f"Failed to save image to {image_path}")
+
+                    # Process features
+                    features = self.extract_features(img_array)
+
+                    # Update database
+                    with sqlite3.connect(self.config.db_path) as conn:
+                        conn.execute(
+                            """INSERT INTO stamps 
+                               (id, image_path, features) 
+                               VALUES (?, ?, ?)""",
+                            (
+                                stamp_id,
+                                image_path,
+                                features.tobytes(),
+                            ),
+                        )
+
+                    # Add features to index
+                    self.index.add(features.reshape(1, -1))
+                    saved_count += 1
+
+                except Exception as e:
+                    logger.warning(f"Failed to process stamp: {str(e)}")
+                    continue
+
+            # Save updated index if any stamps were processed
+            if saved_count > 0:
+                try:
+                    os.makedirs(os.path.dirname(self.config.faiss_index_path), exist_ok=True)
+                    faiss.write_index(self.index, self.config.faiss_index_path)
+                    logger.info(f"Saved FAISS index: {self.config.faiss_index_path}")
+                except Exception as e:
+                    logger.error(f"Failed to save FAISS index: {str(e)}")
 
             return jsonify(
                 {"message": "Stamps saved successfully", "saved_count": saved_count}
             )
 
         except Exception as e:
-            logger.error(f"Error saving stamps: {e}")
-            return jsonify({"error": str(e)}), 500
+            logger.error(f"Error saving stamps: {str(e)}")
+            return jsonify({"error": f"Failed to save stamps: {str(e)}"}), 500
 
     def detect_stamps(self) -> Dict:
         """Detect and analyze stamps in uploaded image"""
@@ -304,7 +325,7 @@ class StampDetectionApp:
                         "id": str(uuid.uuid4()),
                         "bbox": [float(x), float(y), float(w), float(h)],
                         "confidence": float(detection.confidence),
-                        "similar_stamps": similar_stamps,
+                        "similar_stamps": similar_stamps,  # Now contains separate deep and SIFT matches
                     }
                 )
 
@@ -334,6 +355,18 @@ class StampDetectionApp:
 
         except Exception as e:
             logger.error(f"Error retrieving stamp image: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    def get_stamp_count(self):
+        """Get total number of stamps in database"""
+        try:
+            with sqlite3.connect(self.config.db_path) as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM stamps")
+                count = cursor.fetchone()[0]
+                return jsonify({"count": count})
+        except Exception as e:
+            logger.error(f"Error getting stamp count: {e}")
             return jsonify({"error": str(e)}), 500
 
 

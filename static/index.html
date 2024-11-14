@@ -59,14 +59,105 @@
         pointer-events: auto;
         position: relative;
       }
+      .toast-container {
+        position: fixed;
+        bottom: 1rem;
+        right: 1rem;
+        z-index: 50;
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+
+      .toast {
+        padding: 1rem;
+        border-radius: 0.375rem;
+        background-color: white;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
+          0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        transition: all 0.3s ease;
+        opacity: 0;
+        transform: translateX(100%);
+      }
+
+      .toast.show {
+        opacity: 1;
+        transform: translateX(0);
+      }
+
+      .toast.success {
+        border-left: 4px solid #22c55e;
+      }
+
+      .toast.error {
+        border-left: 4px solid #ef4444;
+      }
+
+      .toast.info {
+        border-left: 4px solid #3b82f6;
+      }
+
+      .camera-option {
+        transition: all 0.2s ease;
+      }
+
+      .camera-option:hover {
+        background-color: #f3f4f6;
+      }
+
+      /* Optional: Add some animation to the dialog */
+      @keyframes fadeIn {
+        from {
+          opacity: 0;
+        }
+        to {
+          opacity: 1;
+        }
+      }
+
+      .fixed {
+        animation: fadeIn 0.2s ease;
+      }
     </style>
   </head>
   <body class="bg-gray-100">
     <div class="container mx-auto px-4 py-4">
       <!-- Step indicator -->
       <div class="flex justify-between items-center mb-4">
-        <h1 class="text-2xl font-bold">Stamp Deduplication Tool</h1>
+        <div class="flex items-center gap-4">
+          <h1 class="text-2xl font-bold">Stamp Deduplication Tool</h1>
+          <div
+            class="bg-blue-100 text-blue-800 px-3 py-1 rounded-full text-sm font-medium"
+          >
+            <span id="stamp-counter">0</span> stamps
+          </div>
+        </div>
         <div class="flex gap-4 items-center">
+          <button
+            id="change-camera"
+            class="bg-gray-100 text-gray-700 px-4 py-2 rounded hover:bg-gray-200 flex items-center gap-2"
+          >
+            <svg
+              class="w-5 h-5"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+            >
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z"
+              ></path>
+              <path
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                stroke-width="2"
+                d="M15 13a3 3 0 11-6 0 3 3 0 016 0z"
+              ></path>
+            </svg>
+            <span>Change Camera</span>
+          </button>
           <div class="flex gap-2 text-sm">
             <span id="step-indicator" class="font-medium"></span>
             <span class="text-gray-500">(Press spacebar to continue)</span>
@@ -114,6 +205,8 @@
       </div>
     </div>
 
+    <div id="toast-container" class="toast-container"></div>
+
     <script>
       const video = document.getElementById('webcam')
       const saveSelectedButton = document.getElementById('save-selected')
@@ -131,20 +224,122 @@
       let detectedStamps = []
       let selectedStamps = new Set()
       let capturedImage = null
+      let currentStream = null
 
-      // Initialize webcam
-      navigator.mediaDevices
-        .getUserMedia({
-          video: {
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
-        })
-        .then((stream) => {
+      async function getConnectedCameras() {
+        try {
+          // First request camera permissions
+          await navigator.mediaDevices.getUserMedia({ video: true })
+          const devices = await navigator.mediaDevices.enumerateDevices()
+          return devices.filter((device) => device.kind === 'videoinput')
+        } catch (error) {
+          console.error('Error getting cameras:', error)
+          showToast('Error getting camera list', 'error')
+          return []
+        }
+      }
+
+      async function initializeCamera(deviceId = null) {
+        try {
+          // Stop any existing stream
+          if (currentStream) {
+            currentStream.getTracks().forEach((track) => track.stop())
+          }
+
+          const constraints = {
+            video: deviceId
+              ? {
+                  deviceId: { exact: deviceId },
+                  width: { ideal: 1920 },
+                  height: { ideal: 1080 },
+                }
+              : {
+                  width: { ideal: 1920 },
+                  height: { ideal: 1080 },
+                },
+            audio: false,
+          }
+
+          const stream = await navigator.mediaDevices.getUserMedia(constraints)
           video.srcObject = stream
-        })
-        .catch((error) => {
-          console.error('Error accessing webcam:', error)
+          currentStream = stream
+
+          // Ensure the video plays
+          await video.play()
+
+          return true
+        } catch (error) {
+          console.error('Error accessing camera:', error)
+          showToast(
+            'Error accessing camera. Please check your permissions.',
+            'error'
+          )
+          return false
+        }
+      }
+
+      // Initialize webcam when page loads
+      document.addEventListener('DOMContentLoaded', async () => {
+        const success = await initializeCamera()
+        if (!success) {
+          document.getElementById('change-camera').disabled = true
+          showToast('Failed to initialize camera', 'error')
+        }
+      })
+
+      // Camera change button handler
+      document
+        .getElementById('change-camera')
+        .addEventListener('click', async () => {
+          const cameras = await getConnectedCameras()
+
+          if (cameras.length <= 1) {
+            showToast('No additional cameras found', 'info')
+            return
+          }
+
+          const dialog = document.createElement('div')
+          dialog.className =
+            'fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50'
+          dialog.innerHTML = `
+          <div class="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <h3 class="text-lg font-semibold mb-4">Select Camera</h3>
+            <div class="space-y-2 mb-4">
+              ${cameras
+                .map(
+                  (camera, index) => `
+                <button class="camera-option w-full text-left px-4 py-2 rounded hover:bg-gray-100" 
+                  data-device-id="${camera.deviceId}">
+                  ${camera.label || `Camera ${index + 1}`}
+                </button>
+              `
+                )
+                .join('')}
+            </div>
+            <button class="cancel-camera-select w-full bg-gray-100 text-gray-700 px-4 py-2 rounded hover:bg-gray-200">
+              Cancel
+            </button>
+          </div>
+        `
+
+          document.body.appendChild(dialog)
+
+          // Handle camera selection
+          dialog.addEventListener('click', async (e) => {
+            if (e.target.classList.contains('camera-option')) {
+              const deviceId = e.target.dataset.deviceId
+              const success = await initializeCamera(deviceId)
+              if (success) {
+                showToast('Camera changed successfully', 'success')
+              }
+              document.body.removeChild(dialog)
+            } else if (
+              e.target.classList.contains('cancel-camera-select') ||
+              e.target === dialog
+            ) {
+              document.body.removeChild(dialog)
+            }
+          })
         })
 
       function updateStepIndicator() {
@@ -216,6 +411,12 @@
         detectedStampsContainer.innerHTML = ''
         selectedStamps.clear()
 
+        if (stamps.length === 0) {
+          return showToast('No stamps detected. Please try again.', 'error')
+        }
+
+        console.log(stamps)
+
         stamps.forEach((stamp, index) => {
           const stampCard = document.createElement('div')
           stampCard.className =
@@ -228,9 +429,11 @@
           checkbox.dataset.stampIndex = index
 
           // Auto-check if no similar stamps or all similarities < 15%
-          const hasCloseMatch = stamp.similar_stamps?.some(
-            ([, similarity]) => similarity >= 0.15
-          )
+          const hasCloseMatch =
+            stamp.similar_stamps &&
+            stamp.similar_stamps?.matches.some(
+              ({ similarity }) => similarity >= 0.7
+            )
           if (!stamp.similar_stamps || !hasCloseMatch) {
             checkbox.checked = true
             selectedStamps.add(index)
@@ -260,15 +463,15 @@
           const similarContainer = document.createElement('div')
           similarContainer.className = 'flex-1 similar-stamps-scroll'
 
-          if (stamp.similar_stamps && stamp.similar_stamps.length > 0) {
+          if (stamp.similar_stamps && stamp.similar_stamps.matches.length > 0) {
             const similarStamps = document.createElement('div')
             similarStamps.className = 'inline-flex gap-2'
 
-            stamp.similar_stamps.forEach(([id, similarity]) => {
+            stamp.similar_stamps.matches.forEach(({ id, similarity }) => {
               const similarStamp = document.createElement('div')
               similarStamp.className = 'inline-block text-center'
               similarStamp.innerHTML = `
-                <img src="http://localhost:5000/stamp_image/${id}"
+                <img src="/stamp_image/${id}"
                      alt="Similar Stamp"
                      class="w-24 h-24 object-contain bg-white border rounded">
                 <div class="text-xs font-medium">${(similarity * 100).toFixed(
@@ -332,7 +535,7 @@
             captureImage().then((blob) => {
               formData.append('image', blob, 'captured_image.jpg')
 
-              fetch('http://localhost:5000/detect_stamps', {
+              fetch('/detect_stamps', {
                 method: 'POST',
                 body: formData,
               })
@@ -347,6 +550,10 @@
                 })
                 .catch((error) => {
                   console.error('Error:', error)
+                  showToast(
+                    'Error detecting stamps. Please try again.',
+                    'error'
+                  )
                 })
             })
           } else if (currentStep === 2) {
@@ -362,7 +569,7 @@
               }
             })
 
-            fetch('http://localhost:5000/save_stamps', {
+            fetch('/save_stamps', {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
@@ -371,16 +578,20 @@
             })
               .then((response) => response.json())
               .then((data) => {
-                alert(`Successfully saved ${data.saved_count} stamps!`)
+                showToast(
+                  `Successfully saved ${data.saved_count} stamps!`,
+                  'success'
+                )
                 detectedStampsContainer.innerHTML = ''
                 selectedStamps.clear()
                 saveSelectedButton.disabled = true
                 video.play()
                 goToStep(1)
+                updateStampCounter()
               })
               .catch((error) => {
                 console.error('Error saving stamps:', error)
-                alert('Error saving stamps. Please try again.')
+                showToast('Error saving stamps. Please try again.', 'error')
               })
           }
         }
@@ -391,6 +602,57 @@
         showReview()
         goToStep(3)
       })
+
+      function showToast(message, type = 'info', duration = 3000) {
+        const container = document.getElementById('toast-container')
+
+        const toast = document.createElement('div')
+        toast.className = `toast ${type}`
+        toast.innerHTML = `
+          <div class="flex items-center gap-2">
+            ${
+              type === 'success'
+                ? '<svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>'
+                : type === 'error'
+                ? '<svg class="w-5 h-5 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>'
+                : '<svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>'
+            }
+            <span>${message}</span>
+          </div>
+        `
+
+        container.appendChild(toast)
+
+        // Trigger reflow to enable transition
+        toast.offsetHeight
+
+        // Show toast
+        requestAnimationFrame(() => {
+          toast.classList.add('show')
+        })
+
+        // Remove toast after duration
+        setTimeout(() => {
+          toast.classList.remove('show')
+          setTimeout(() => {
+            container.removeChild(toast)
+          }, 300) // Match transition duration
+        }, duration)
+      }
+
+      function updateStampCounter() {
+        fetch('/stamp_count')
+          .then((response) => response.json())
+          .then((data) => {
+            document.getElementById('stamp-counter').textContent = data.count
+          })
+          .catch((error) => {
+            console.error('Error fetching stamp count:', error)
+          })
+      }
+
+      // Call it when the page loads
+      document.addEventListener('DOMContentLoaded', updateStampCounter)
     </script>
   </body>
 </html>
