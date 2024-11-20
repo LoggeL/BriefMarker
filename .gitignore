@@ -11,7 +11,7 @@ wheels/
 
 pics
 
-*.fiass
+*.faiss
 *.db
 *.jpg
 
