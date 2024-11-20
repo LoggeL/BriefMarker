@@ -75,7 +75,7 @@ class StampDetectionApp:
     def _init_models(self):
         """Initialize ML models and transforms"""
         # Roboflow model for stamp detection
-        self.model = inference.get_model("stamps-kh78w/2")
+        self.model = inference.get_model("stamps-kh78w/3")
 
         # ResNet model for feature extraction
         self.feature_extractor = models.resnet18(
@@ -119,15 +119,15 @@ class StampDetectionApp:
         """Initialize FAISS similarity search index"""
         try:
             index_path = self.config.faiss_index_path
-            
+
             if os.path.exists(index_path):
                 index = faiss.read_index(index_path)
             else:
                 index = faiss.IndexFlatL2(FEATURE_DIMENSION)  # For deep features
                 faiss.write_index(index, index_path)
-            
+
             return index
-            
+
         except Exception as e:
             logger.error(f"FAISS initialization error: {e}")
             raise
@@ -170,9 +170,11 @@ class StampDetectionApp:
             with torch.no_grad():
                 img_tensor = self.transform(image).unsqueeze(0)
                 features = self.feature_extractor(img_tensor).numpy().flatten()
-                assert features.shape[0] == FEATURE_DIMENSION, f"Expected {FEATURE_DIMENSION} features, got {features.shape[0]}"
+                assert (
+                    features.shape[0] == FEATURE_DIMENSION
+                ), f"Expected {FEATURE_DIMENSION} features, got {features.shape[0]}"
                 features = features / (np.linalg.norm(features) + 1e-7)
-                return features.astype('float32')
+                return features.astype("float32")
 
         except Exception as e:
             logger.error(f"Feature extraction error: {e}")
@@ -183,28 +185,49 @@ class StampDetectionApp:
     ) -> Dict[str, List[Dict[str, Union[str, float]]]]:
         """Find similar stamps using deep features"""
         try:
-            distances, indices = self.index.search(features.reshape(1, -1), k)
-            
+            # Check if index is empty
+            if self.index.ntotal == 0:
+                return {"matches": []}
+
+            # Debug logging
+            logger.info(
+                f"Feature shape: {features.shape}, Index dimension: {self.index.d}"
+            )
+
+            # Ensure features match the expected dimension
+            features = features.astype("float32")  # FAISS requires float32
+            if len(features.shape) == 1:
+                features = features.reshape(1, -1)
+
+            # Verify dimensions match
+            if features.shape[1] != self.index.d:
+                logger.error(
+                    f"Feature dimension mismatch. Expected {self.index.d}, got {features.shape[1]}"
+                )
+                return {"matches": []}
+
+            distances, indices = self.index.search(features, k)
+
             matches = []
             with sqlite3.connect(self.config.db_path) as conn:
                 cursor = conn.cursor()
-                
+
                 for idx, dist in enumerate(distances[0]):
+                    if idx >= len(indices[0]):  # Guard against index out of bounds
+                        continue
+
                     cursor.execute(
                         "SELECT id FROM stamps WHERE rowid = ?",
                         (int(indices[0][idx]) + 1,),
                     )
                     if result := cursor.fetchone():
                         similarity = float(1 / (1 + dist))
-                        matches.append({
-                            "id": result[0],
-                            "similarity": similarity
-                        })
+                        matches.append({"id": result[0], "similarity": similarity})
 
             return {"matches": matches}
 
         except Exception as e:
-            logger.error(f"Error finding similar stamps: {e}")
+            logger.error(f"Error finding similar stamps: {str(e)}")
             return {"matches": []}
 
     def save_stamps(self) -> Dict:
@@ -269,7 +292,9 @@ class StampDetectionApp:
             # Save updated index if any stamps were processed
             if saved_count > 0:
                 try:
-                    os.makedirs(os.path.dirname(self.config.faiss_index_path), exist_ok=True)
+                    os.makedirs(
+                        os.path.dirname(self.config.faiss_index_path), exist_ok=True
+                    )
                     faiss.write_index(self.index, self.config.faiss_index_path)
                     logger.info(f"Saved FAISS index: {self.config.faiss_index_path}")
                 except Exception as e:
@@ -300,6 +325,9 @@ class StampDetectionApp:
             img_array = cv2.imdecode(
                 np.frombuffer(image_data, np.uint8), cv2.IMREAD_COLOR
             )
+
+            # Write image to file
+            cv2.imwrite("temp.jpg", img_array)
 
             # Detect stamps
             results = self.model.infer(image=img_array)
