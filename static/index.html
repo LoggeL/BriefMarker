@@ -29,9 +29,14 @@
       .stamp-card {
         transition: all 0.2s ease;
         cursor: pointer;
+        /* red ish */
+        background-color: #ef444455 !important;
+        border: 1px solid #ef4444;
       }
       .stamp-card.selected {
-        background-color: #e0f2fe !important;
+        /* green ish */
+        background-color: #22c55e55 !important;
+        border: 1px solid #22c55e;
       }
       .bounding-box {
         position: absolute;
@@ -174,14 +179,82 @@
       <!-- Step 1: Webcam capture -->
       <div id="step-1" class="step active">
         <div class="bg-white p-4 rounded-lg shadow-md">
-          <video
-            id="webcam"
-            autoplay
-            playsinline
-            width="1920"
-            height="1080"
-            style="width: 100%; height: auto"
-          ></video>
+          <!-- Add tabs for webcam/upload -->
+          <div class="flex gap-4 mb-4">
+            <button
+              id="webcam-tab"
+              class="px-4 py-2 rounded font-medium bg-blue-500 text-white"
+            >
+              Webcam
+            </button>
+            <button
+              id="upload-tab"
+              class="px-4 py-2 rounded font-medium bg-gray-200 hover:bg-gray-300"
+            >
+              Upload Image
+            </button>
+          </div>
+
+          <!-- Webcam view -->
+          <div id="webcam-view">
+            <video
+              id="webcam"
+              autoplay
+              playsinline
+              width="1920"
+              height="1080"
+              style="width: 100%; height: auto"
+            ></video>
+          </div>
+
+          <!-- Upload view (hidden by default) -->
+          <div id="upload-view" class="hidden">
+            <div
+              class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center"
+            >
+              <input
+                type="file"
+                id="file-input"
+                class="hidden"
+                accept="image/*"
+              />
+              <div class="space-y-4">
+                <div id="preview-container" class="hidden">
+                  <img id="preview-image" class="max-h-[600px] mx-auto mb-4" />
+                  <button
+                    id="clear-image"
+                    class="text-red-500 hover:text-red-600"
+                  >
+                    Clear Image
+                  </button>
+                </div>
+                <div id="upload-prompt">
+                  <svg
+                    class="mx-auto h-12 w-12 text-gray-400"
+                    stroke="currentColor"
+                    fill="none"
+                    viewBox="0 0 48 48"
+                  >
+                    <path
+                      d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8m-12 4h.02"
+                      stroke-width="2"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                    />
+                  </svg>
+                  <div class="mt-4">
+                    <label
+                      for="file-input"
+                      class="cursor-pointer bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600"
+                    >
+                      Select Image
+                    </label>
+                  </div>
+                  <p class="mt-2 text-sm text-gray-500">or drag and drop</p>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -225,6 +298,94 @@
       let selectedStamps = new Set()
       let capturedImage = null
       let currentStream = null
+
+      const webcamView = document.getElementById('webcam-view')
+      const uploadView = document.getElementById('upload-view')
+      const webcamTab = document.getElementById('webcam-tab')
+      const uploadTab = document.getElementById('upload-tab')
+      const fileInput = document.getElementById('file-input')
+      const previewContainer = document.getElementById('preview-container')
+      const previewImage = document.getElementById('preview-image')
+      const uploadPrompt = document.getElementById('upload-prompt')
+      const clearImageBtn = document.getElementById('clear-image')
+
+      let uploadedImage = null
+
+      // Tab switching
+      webcamTab.addEventListener('click', () => {
+        webcamTab.classList.replace('bg-gray-200', 'bg-blue-500')
+        webcamTab.classList.replace('text-gray-700', 'text-white')
+        uploadTab.classList.replace('bg-blue-500', 'bg-gray-200')
+        uploadTab.classList.replace('text-white', 'text-gray-700')
+        webcamView.classList.remove('hidden')
+        uploadView.classList.add('hidden')
+        initializeCamera() // Restart webcam
+      })
+
+      uploadTab.addEventListener('click', () => {
+        uploadTab.classList.replace('bg-gray-200', 'bg-blue-500')
+        uploadTab.classList.replace('text-gray-700', 'text-white')
+        webcamTab.classList.replace('bg-blue-500', 'bg-gray-200')
+        webcamTab.classList.replace('text-white', 'text-gray-700')
+        uploadView.classList.remove('hidden')
+        webcamView.classList.add('hidden')
+        if (currentStream) {
+          currentStream.getTracks().forEach((track) => track.stop())
+        }
+      })
+
+      // webcamTab.click();
+
+      // File input handling
+      fileInput.addEventListener('change', handleFileSelect)
+      clearImageBtn.addEventListener('click', clearUploadedImage)
+
+      // Drag and drop handling
+      uploadView.addEventListener('dragover', (e) => {
+        e.preventDefault()
+        uploadView.classList.add('border-blue-500')
+      })
+
+      uploadView.addEventListener('dragleave', (e) => {
+        e.preventDefault()
+        uploadView.classList.remove('border-blue-500')
+      })
+
+      uploadView.addEventListener('drop', (e) => {
+        e.preventDefault()
+        uploadView.classList.remove('border-blue-500')
+        const file = e.dataTransfer.files[0]
+        if (file && file.type.startsWith('image/')) {
+          handleFile(file)
+        } else {
+          showToast('Please upload an image file', 'error')
+        }
+      })
+
+      function handleFileSelect(e) {
+        const file = e.target.files[0]
+        if (file) {
+          handleFile(file)
+        }
+      }
+
+      function handleFile(file) {
+        const reader = new FileReader()
+        reader.onload = (e) => {
+          uploadedImage = e.target.result
+          previewImage.src = uploadedImage
+          previewContainer.classList.remove('hidden')
+          uploadPrompt.classList.add('hidden')
+        }
+        reader.readAsDataURL(file)
+      }
+
+      function clearUploadedImage() {
+        uploadedImage = null
+        fileInput.value = ''
+        previewContainer.classList.add('hidden')
+        uploadPrompt.classList.remove('hidden')
+      }
 
       async function getConnectedCameras() {
         try {
@@ -366,7 +527,7 @@
         }
       }
 
-      function extractStampImage(bbox) {
+      function extractStampImage(bbox, image) {
         const canvas = document.createElement('canvas')
         const padding = 20
         canvas.width = bbox[2] + padding * 2
@@ -374,7 +535,7 @@
         const ctx = canvas.getContext('2d')
 
         ctx.drawImage(
-          video,
+          image,
           bbox[0] - bbox[2] / 2 - padding,
           bbox[1] - bbox[3] / 2 - padding,
           bbox[2] + padding * 2,
@@ -386,25 +547,6 @@
         )
 
         return canvas.toDataURL('image/jpeg', 0.95)
-      }
-
-      function captureImage() {
-        const canvas = document.createElement('canvas')
-        canvas.width = video.videoWidth
-        canvas.height = video.videoHeight
-        canvas.getContext('2d').drawImage(video, 0, 0)
-
-        capturedImage = canvas.toDataURL('image/jpeg', 0.95)
-
-        return new Promise((resolve) => {
-          canvas.toBlob(
-            (blob) => {
-              resolve(blob)
-            },
-            'image/jpeg',
-            0.95
-          )
-        })
       }
 
       function displayDetectedStamps(stamps) {
@@ -432,7 +574,7 @@
           const hasCloseMatch =
             stamp.similar_stamps &&
             stamp.similar_stamps?.matches.some(
-              ({ similarity }) => similarity >= 0.7
+              ({ similarity }) => similarity >= 0.8
             )
           if (!stamp.similar_stamps || !hasCloseMatch) {
             checkbox.checked = true
@@ -497,9 +639,9 @@
         saveSelectedButton.disabled = selectedStamps.size === 0
       }
 
-      function showReview() {
+      function showReview(imageData) {
         // Display captured image
-        reviewImage.src = capturedImage
+        reviewImage.src = imageData
         reviewBoxes.innerHTML = ''
         reviewImage.onload = () => {
           // Add bounding boxes
@@ -524,40 +666,49 @@
       }
 
       // Handle spacebar navigation
+      let imageData
       document.addEventListener('keydown', (e) => {
         if (e.code === 'Space') {
           e.preventDefault()
 
           if (currentStep === 1) {
-            video.pause()
+            if (uploadedImage && webcamView.classList.contains('hidden')) {
+              imageData = uploadedImage
+            } else {
+              // Capture from webcam
+              const canvas = document.createElement('canvas')
+              canvas.width = video.videoWidth
+              canvas.height = video.videoHeight
+              canvas.getContext('2d').drawImage(video, 0, 0)
+              imageData = canvas.toDataURL('image/jpeg', 0.95)
+            }
+
             const formData = new FormData()
+            const blob = dataURItoBlob(imageData)
+            formData.append('image', blob, 'captured_image.jpg')
 
-            captureImage().then((blob) => {
-              formData.append('image', blob, 'captured_image.jpg')
+            const image = new Image()
+            image.src = imageData
 
-              fetch('/detect_stamps', {
-                method: 'POST',
-                body: formData,
-              })
-                .then((response) => response.json())
-                .then((data) => {
-                  detectedStamps = data.stamps.map((stamp) => ({
-                    ...stamp,
-                    imageUrl: extractStampImage(stamp.bbox),
-                  }))
-                  displayDetectedStamps(detectedStamps)
-                  goToStep(2)
-                })
-                .catch((error) => {
-                  console.error('Error:', error)
-                  showToast(
-                    'Error detecting stamps. Please try again.',
-                    'error'
-                  )
-                })
+            fetch('/detect_stamps', {
+              method: 'POST',
+              body: formData,
             })
+              .then((response) => response.json())
+              .then((data) => {
+                detectedStamps = data.stamps.map((stamp) => ({
+                  ...stamp,
+                  imageUrl: extractStampImage(stamp.bbox, image),
+                }))
+                displayDetectedStamps(detectedStamps)
+                goToStep(2)
+              })
+              .catch((error) => {
+                console.error('Error:', error)
+                showToast('Error detecting stamps. Please try again.', 'error')
+              })
           } else if (currentStep === 2) {
-            showReview()
+            showReview(imageData)
             goToStep(3)
           } else if (currentStep === 3) {
             // Save stamps and reset
@@ -599,7 +750,7 @@
 
       // Optional save button in step 2
       saveSelectedButton.addEventListener('click', () => {
-        showReview()
+        showReview(imageData)
         goToStep(3)
       })
 
@@ -653,6 +804,18 @@
 
       // Call it when the page loads
       document.addEventListener('DOMContentLoaded', updateStampCounter)
+
+      // Helper function to convert data URI to Blob
+      function dataURItoBlob(dataURI) {
+        const byteString = atob(dataURI.split(',')[1])
+        const mimeString = dataURI.split(',')[0].split(':')[1].split(';')[0]
+        const ab = new ArrayBuffer(byteString.length)
+        const ia = new Uint8Array(ab)
+        for (let i = 0; i < byteString.length; i++) {
+          ia[i] = byteString.charCodeAt(i)
+        }
+        return new Blob([ab], { type: mimeString })
+      }
     </script>
   </body>
 </html>
