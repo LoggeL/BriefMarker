@@ -34,9 +34,7 @@ logger = logging.getLogger(__name__)
 load_dotenv()
 
 # Application constants
-FEATURE_DIMENSION = 512
-HOG_FEATURES_SIZE = 512
-SIFT_FEATURES_SIZE = 512
+FEATURE_DIMENSION = 2048
 MAX_IMAGE_SIZE = 4000
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg"}
 DEFAULT_CONFIDENCE_THRESHOLD = 0.5
@@ -81,9 +79,9 @@ class StampDetectionApp:
         # Roboflow model for stamp detection
         self.model = inference.get_model("stamps-kh78w/3")
 
-        # ResNet model for feature extraction
-        self.feature_extractor = models.resnet18(
-            weights=models.ResNet18_Weights.IMAGENET1K_V1
+        # Switch to ResNet50 for better feature extraction
+        self.feature_extractor = models.resnet50(
+            weights=models.ResNet50_Weights.IMAGENET1K_V1
         )
         self.feature_extractor.fc = torch.nn.Identity()
         self.feature_extractor.eval()
