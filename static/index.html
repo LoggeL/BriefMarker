@@ -4,8 +4,8 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Stamp Deduplication Tool</title>
-    <link rel="icon" type="image/svg+xml" href="/static/assets/logo.svg">
-    <link rel="icon" type="image/png" href="/static/assets/favicon.png">
+    <link rel="icon" type="image/svg+xml" href="/static/assets/logo.svg" />
+    <link rel="icon" type="image/png" href="/static/assets/favicon.png" />
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
       .similar-stamps-scroll {
@@ -124,6 +124,47 @@
 
       .fixed {
         animation: fadeIn 0.2s ease;
+      }
+
+      .loading-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background: rgba(0, 0, 0, 0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 1000;
+        animation: fadeIn 0.2s ease;
+      }
+
+      .loading-content {
+        background: white;
+        padding: 2rem;
+        border-radius: 0.5rem;
+        box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+        text-align: center;
+      }
+
+      .loading-spinner {
+        border: 3px solid #f3f3f3;
+        border-radius: 50%;
+        border-top: 3px solid #3b82f6;
+        width: 40px;
+        height: 40px;
+        margin: 0 auto 1rem;
+        animation: spin 1s linear infinite;
+      }
+
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
       }
     </style>
   </head>
@@ -675,41 +716,84 @@
           e.preventDefault()
 
           if (currentStep === 1) {
-            if (uploadedImage && webcamView.classList.contains('hidden')) {
-              imageData = uploadedImage
-            } else {
-              // Capture from webcam
-              const canvas = document.createElement('canvas')
-              canvas.width = video.videoWidth
-              canvas.height = video.videoHeight
-              canvas.getContext('2d').drawImage(video, 0, 0)
-              imageData = canvas.toDataURL('image/jpeg', 0.95)
+            showLoading('Detecting stamps...')
+            try {
+              if (uploadedImage && webcamView.classList.contains('hidden')) {
+                imageData = uploadedImage
+              } else {
+                // Capture from webcam at 1920x1080
+                const canvas = document.createElement('canvas')
+                canvas.width = 1920
+                canvas.height = 1080
+                const ctx = canvas.getContext('2d')
+
+                // Flip horizontally if needed (most webcams are mirrored)
+                ctx.translate(canvas.width, 0)
+                ctx.scale(-1, 1)
+
+                // Calculate scaling to maintain aspect ratio
+                const videoAspect = video.videoWidth / video.videoHeight
+                const targetAspect = 16 / 9 // 1920/1080
+
+                let drawWidth = canvas.width
+                let drawHeight = canvas.height
+                let offsetX = 0
+                let offsetY = 0
+
+                if (videoAspect > targetAspect) {
+                  // Video is wider than target
+                  drawHeight = canvas.width / videoAspect
+                  offsetY = (canvas.height - drawHeight) / 2
+                } else {
+                  // Video is taller than target
+                  drawWidth = canvas.height * videoAspect
+                  offsetX = (canvas.width - drawWidth) / 2
+                }
+
+                ctx.drawImage(video, offsetX, offsetY, drawWidth, drawHeight)
+
+                // Reset transform
+                ctx.setTransform(1, 0, 0, 1, 0, 0)
+
+                imageData = canvas.toDataURL('image/jpeg', 0.95)
+              }
+
+              const formData = new FormData()
+              const blob = dataURItoBlob(imageData)
+              formData.append('image', blob, 'captured_image.jpg')
+
+              const image = new Image()
+              image.src = imageData
+
+              video.pause()
+
+              fetch('/detect_stamps', {
+                method: 'POST',
+                body: formData,
+              })
+                .then((response) => response.json())
+                .then((data) => {
+                  hideLoading()
+                  detectedStamps = data.stamps.map((stamp) => ({
+                    ...stamp,
+                    imageUrl: extractStampImage(stamp.bbox, image),
+                  }))
+                  displayDetectedStamps(detectedStamps)
+                  goToStep(2)
+                })
+                .catch((error) => {
+                  hideLoading()
+                  console.error('Error:', error)
+                  showToast(
+                    'Error detecting stamps. Please try again.',
+                    'error'
+                  )
+                })
+            } catch (error) {
+              hideLoading()
+              console.error('Error:', error)
+              showToast('Error detecting stamps. Please try again.', 'error')
             }
-
-            const formData = new FormData()
-            const blob = dataURItoBlob(imageData)
-            formData.append('image', blob, 'captured_image.jpg')
-
-            const image = new Image()
-            image.src = imageData
-
-            fetch('/detect_stamps', {
-              method: 'POST',
-              body: formData,
-            })
-              .then((response) => response.json())
-              .then((data) => {
-                detectedStamps = data.stamps.map((stamp) => ({
-                  ...stamp,
-                  imageUrl: extractStampImage(stamp.bbox, image),
-                }))
-                displayDetectedStamps(detectedStamps)
-                goToStep(2)
-              })
-              .catch((error) => {
-                console.error('Error:', error)
-                showToast('Error detecting stamps. Please try again.', 'error')
-              })
           } else if (currentStep === 2) {
             showReview(imageData)
             goToStep(3)
@@ -818,6 +902,31 @@
           ia[i] = byteString.charCodeAt(i)
         }
         return new Blob([ab], { type: mimeString })
+      }
+
+      function showLoading(message = 'Loading...') {
+        const overlay = document.createElement('div')
+        overlay.className = 'loading-overlay'
+        overlay.id = 'loadingOverlay'
+
+        overlay.innerHTML = `
+          <div class="loading-content">
+            <div class="loading-spinner"></div>
+            <div class="text-gray-700 font-medium">${message}</div>
+          </div>
+        `
+
+        document.body.appendChild(overlay)
+      }
+
+      function hideLoading() {
+        const overlay = document.getElementById('loadingOverlay')
+        if (overlay) {
+          overlay.style.opacity = '0'
+          setTimeout(() => {
+            document.body.removeChild(overlay)
+          }, 300)
+        }
       }
     </script>
   </body>
