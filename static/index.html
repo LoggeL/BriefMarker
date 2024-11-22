@@ -726,10 +726,6 @@
                 canvas.width = 1920
                 canvas.height = 1080
                 const ctx = canvas.getContext('2d')
-
-                // Flip horizontally if needed (most webcams are mirrored)
-                ctx.translate(canvas.width, 0)
-
                 // Calculate scaling to maintain aspect ratio
                 const videoAspect = video.videoWidth / video.videoHeight
                 const targetAspect = 16 / 9 // 1920/1080
