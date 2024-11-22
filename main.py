@@ -66,6 +66,10 @@ class StampDetectionApp:
         # Create required directories
         Path(self.config.stamps_dir).mkdir(parents=True, exist_ok=True)
 
+        # Create static directories
+        Path("static").mkdir(parents=True, exist_ok=True)
+        Path("static/assets").mkdir(parents=True, exist_ok=True)
+
         # Initialize components
         self._init_db()
         self.index = self._init_faiss()  # Single index for deep features
@@ -135,6 +139,7 @@ class StampDetectionApp:
     def _setup_routes(self) -> None:
         """Configure Flask routes"""
         self.app.route("/")(self.serve_index)
+        self.app.route("/static/<path:filename>")(self.serve_static)
         self.app.route("/detect_stamps", methods=["POST"])(self.detect_stamps)
         self.app.route("/stamp_image/<stamp_id>", methods=["GET"])(self.get_stamp_image)
         self.app.route("/save_stamps", methods=["POST"])(self.save_stamps)
@@ -396,6 +401,10 @@ class StampDetectionApp:
         except Exception as e:
             logger.error(f"Error getting stamp count: {e}")
             return jsonify({"error": str(e)}), 500
+
+    def serve_static(self, filename):
+        """Serve static files"""
+        return send_from_directory("static", filename)
 
 
 def create_app(config: Optional[Config] = None) -> Flask:
