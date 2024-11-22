@@ -798,6 +798,7 @@
             showReview(imageData)
             goToStep(3)
           } else if (currentStep === 3) {
+            showLoading('Saving stamps...')
             // Save stamps and reset
             const stampsToSave = Array.from(selectedStamps).map((index) => {
               const stamp = detectedStamps[index]
@@ -826,10 +827,12 @@
                 video.play()
                 goToStep(1)
                 updateStampCounter()
+                hideLoading()
               })
               .catch((error) => {
                 console.error('Error saving stamps:', error)
                 showToast('Error saving stamps. Please try again.', 'error')
+                hideLoading()
               })
           }
         }
