@@ -618,7 +618,7 @@
           const hasCloseMatch =
             stamp.similar_stamps &&
             stamp.similar_stamps?.matches.some(
-              ({ similarity }) => similarity >= 0.8
+              ({ similarity }) => similarity >= 1 // FIXME: Make this configurable
             )
           if (!stamp.similar_stamps || !hasCloseMatch) {
             checkbox.checked = true
@@ -729,7 +729,6 @@
 
                 // Flip horizontally if needed (most webcams are mirrored)
                 ctx.translate(canvas.width, 0)
-                ctx.scale(-1, 1)
 
                 // Calculate scaling to maintain aspect ratio
                 const videoAspect = video.videoWidth / video.videoHeight
